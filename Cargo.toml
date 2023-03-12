@@ -7,9 +7,9 @@ edition = "2021"
 
 [dependencies]
 actix-web = "4.3.1"
-itertools = "0.10.5"
+env_logger = "0.10.0"
 regex = "1.7.1"
-reqwest = "0.11.14"
-serde = {version = "1.0.155", features = ["derive"] }
+reqwest = {version = "0.11.14", features = ["json"]}
+serde = {version = "1.0.155", features = ["derive"]}
 serde_json = "1.0.94"
 tokio = "1.26.0"

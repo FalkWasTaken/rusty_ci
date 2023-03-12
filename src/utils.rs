@@ -1,37 +1,33 @@
 use std::{
     path::Path,
-    process::{Command, ExitStatus},
+    process::{Command, ExitStatusError, Stdio},
 };
 
 use crate::TARGET_DIR;
 
-pub fn update_target(url: &str, branch: &str, main_branch: &str) -> ExitStatus {
+pub fn update_target(url: &str, branch: &str, main_branch: &str) -> Result<(), ExitStatusError> {
     if !Path::new(&format!("{TARGET_DIR}/.git")).exists() {
-        let status = Command::new("git")
+        Command::new("git")
             .args(["clone", url, TARGET_DIR])
-            .spawn()
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
             .unwrap()
-            .wait()
-            .unwrap();
-        if !status.success() {
-            return status;
-        }
+            .exit_ok()?;
     }
-    for args in [vec!["checkout", main_branch], vec!["pull"], vec!["checkout", branch]] {
-        let status = run_command("git", &args);
-        if !status.success() {
-            return status;
-        }
-    }
+    run_command("git", &["checkout", main_branch])?;
+    run_command("git", &["pull"])?;
+    run_command("git", &["checkout", branch])?;
     run_command("git", &["pull"])
 }
 
-pub fn run_command(command: &str, args: &[&str]) -> ExitStatus {
+pub fn run_command(command: &str, args: &[&str]) -> Result<(), ExitStatusError> {
     Command::new(command)
         .args(args)
         .current_dir(TARGET_DIR)
-        .spawn()
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
         .unwrap()
-        .wait()
-        .unwrap()
+        .exit_ok()
 }
