@@ -22,8 +22,8 @@ const TARGET_DIR: &str = "target_repo";
 
 #[derive(Deserialize)]
 struct Config {
-    token: &'static str,
-    main_branch: &'static str,
+    token: String,
+    main_branch: String,
 }
 
 type Lock = Data<tokio::sync::Mutex<()>>;
@@ -51,7 +51,7 @@ async fn run_ci(request: PushRequest, config: Data<Config>, lock: Lock) {
             &request.after,
             status,
             description,
-            config.token,
+            &config.token,
         )
     };
     let _guard = match lock.try_lock() {
@@ -67,7 +67,7 @@ async fn run_ci(request: PushRequest, config: Data<Config>, lock: Lock) {
         post(status, error_msg).await;
         println!("\t{error_msg}");
     };
-    if utils::update_target(&repo.clone_url, &request.branch(), config.main_branch).is_err() {
+    if utils::update_target(&repo.clone_url, &request.branch(), &config.main_branch).is_err() {
         report(Error, "Failed to update local repository.").await;
         return;
     }
@@ -110,7 +110,13 @@ async fn post_status(
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     env_logger::init_from_env(Env::default().default_filter_or("info"));
-    let config = Data::new(serde_json::from_str::<Config>(include_str!("../config.json")).unwrap());
+    let config = Data::new(
+        serde_json::from_str::<Config>(
+            &std::fs::read_to_string("config.json")
+                .expect("Could not find `config.json` in prject root."),
+        )
+        .unwrap(),
+    );
     let lock = Data::new(Mutex::new(()));
     HttpServer::new(move || {
         App::new()
