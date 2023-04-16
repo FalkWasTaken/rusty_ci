@@ -1,32 +1,34 @@
-#![feature(async_closure, exit_status_error)]
+#![feature(exit_status_error)]
 
 use tokio::{sync::Mutex, task::spawn};
 
 use actix_web::{
+    get,
     middleware::Logger,
     post,
     web::{Data, Json},
-    App, HttpResponse, HttpServer,
+    App, HttpResponse, HttpServer, Responder,
 };
 
 use env_logger::Env;
 use regex::Regex;
 
-use serde::Deserialize;
-use structs::{CommitStatus, PushRequest, StatusRequestBody};
+use structs::{CIResult, CommitStatus, Config, PushRequest};
+use utils::Log;
+
+use crate::utils::post_status;
 
 mod structs;
 mod utils;
 
 const TARGET_DIR: &str = "target_repo";
 
-#[derive(Deserialize)]
-struct Config {
-    token: String,
-    main_branch: String,
-}
-
 type Lock = Data<tokio::sync::Mutex<()>>;
+
+#[get("/logs/{sha}")]
+async fn logs(sha: actix_web::web::Path<String>) -> impl Responder {
+    std::fs::read_to_string(format!("logs/{sha}.txt"))
+}
 
 #[post("/push")]
 async fn push(Json(request): Json<PushRequest>, config: Data<Config>, lock: Lock) -> HttpResponse {
@@ -36,75 +38,56 @@ async fn push(Json(request): Json<PushRequest>, config: Data<Config>, lock: Lock
         println!("\tMerge commit detected, aborting...");
         HttpResponse::Ok().body("SHA was zero, no build was tested.")
     } else {
-        spawn(run_ci(request, config, lock));
+        spawn(async move {
+            let mut log = Log::new(&format!("logs/{}.txt", request.after));
+            log.log(&format!(
+                "Processing push request on branch: {}",
+                request.branch()
+            ));
+            let res = run_ci(&request, &config, lock, &mut log).await;
+            log.log(&res.msg);
+            post_status(&request, &config, res, &mut log).await;
+        });
         println!("\tTasks started, sending response...");
         HttpResponse::Accepted().body("Push request accepted. Building repository...")
     }
 }
 
-async fn run_ci(request: PushRequest, config: Data<Config>, lock: Lock) {
+async fn run_ci(
+    request: &PushRequest,
+    config: &Data<Config>,
+    lock: Lock,
+    log: &mut Log,
+) -> CIResult {
     use CommitStatus::*;
     let repo = &request.repository;
-    let post = |status, description| {
-        post_status(
-            &repo.full_name,
-            &request.after,
-            status,
-            description,
-            &config.token,
-        )
-    };
     let _guard = match lock.try_lock() {
         Ok(g) => g,
         Err(_) => {
-            post(Pending, "Waiting for previous job to finish...").await;
+            post_status(
+                request,
+                config,
+                (Pending, "Waiting for previous job to finish...").into(),
+                log,
+            )
+            .await;
             lock.lock().await
         }
     };
-    post(Pending, "Building repository and running tests...").await;
-    println!("\tUpdating target repository...");
-    let report = async move |status, error_msg| {
-        post(status, error_msg).await;
-        println!("\t{error_msg}");
-    };
-    if utils::update_target(&repo.clone_url, &request.branch(), &config.main_branch).is_err() {
-        report(Error, "Failed to update local repository.").await;
-        return;
-    }
-    println!("\tBuilding project...");
-    if utils::run_command("cargo", &["build"]).is_err() {
-        report(Failure, "Failed to build project.").await;
-        return;
-    }
-    println!("\tRunning tests...");
-    if utils::run_command("cargo", &["test"]).is_err() {
-        report(Failure, "One or more tests failed.").await;
-        return;
-    }
-    post(Success, "All tests passed.").await;
-    println!("\tAll tasks complete.\n");
-}
+    post_status(request, config, (Pending, "Running tasks...").into(), log).await;
 
-async fn post_status(
-    repo_name: &str,
-    sha: &str,
-    status: CommitStatus,
-    description: &str,
-    token: &str,
-) {
-    let context = "Custom CI server";
-    let req = reqwest::Client::new()
-        .post(format!(
-            "https://api.github.com/repos/{repo_name}/statuses/{sha}"
-        ))
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Accept", "application/vnd.github+json")
-        .header("User-Agent", context)
-        .json(&StatusRequestBody::new(status, description, context));
-    let res = req.send().await.unwrap();
-    if !res.status().is_success() {
-        println!("\tError: {}", res.text().await.unwrap());
+    log.log("Updating target repository...");
+    if utils::update_target(&repo.clone_url, &request.branch(), &config.main_branch, log).is_err() {
+        return (Error, "Failed to update local repository.").into();
     }
+    for task in &config.tasks {
+        log.log("---------------------------------------------------------");
+        log.log(&format!("Running task `{}`...", task.name));
+        if utils::run_command(&task.command, &task.args, log).is_err() {
+            return (Failure, format!("Task `{}` failed.", task.name)).into();
+        }
+    }
+    (Success, "All tasks finished successfuly.").into()
 }
 
 #[actix_web::main]
@@ -124,6 +107,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(config.clone())
             .app_data(lock.clone())
             .service(push)
+            .service(logs)
     })
     .bind(("localhost", 8080))?
     .run()
