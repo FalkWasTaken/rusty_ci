@@ -115,7 +115,7 @@ async fn main() -> std::io::Result<()> {
 }
 
 #[cfg(test)]
-mod test {
+mod dummy_tests {
     #[test]
     fn test1() {
         let x = 10;
