@@ -136,6 +136,6 @@ mod test {
     fn test1() {
         let x = 10;
         let y = 5;
-        assert_eq!(13, x + y)
+        assert_eq!(15, x + y)
     }
 }
